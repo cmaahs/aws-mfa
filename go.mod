@@ -1,4 +1,4 @@
-module github.com/cmaahs/aws-mfa
+module aws-mfa
 
 go 1.14
 
