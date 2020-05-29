@@ -121,7 +121,7 @@ func saveAwsCredentialsFile(iniFile *ini.File, pathOverride string) error {
 	return nil
 }
 
-func getCredentialInfo(iniFile *ini.File, sectionName string, credType string) (credentialInfo, error) {
+func getCredentialInfo(iniFile *ini.File, sectionName string) (credentialInfo, error) {
 
 	sect, err := iniFile.GetSection(sectionName)
 	errCheck(err)
@@ -130,6 +130,18 @@ func getCredentialInfo(iniFile *ini.File, sectionName string, credType string) (
 	errCheck(err)
 
 	return *info, nil
+
+}
+
+func getAssumedRoleFromSection(iniFile *ini.File, sectionName string) (string, error) {
+
+	sect, err := iniFile.GetSection(sectionName)
+	errCheck(err)
+	info := &credentialInfo{}
+	err = sect.MapTo(info)
+	errCheck(err)
+
+	return info.AssumedRoleARN, nil
 
 }
 
@@ -195,48 +207,86 @@ func process(params *processParameters) (string, error) {
 
 	awsCredsFile := getAwsCredentialsFileObject("")
 	longTermProfile := fmt.Sprintf("%s-long-term", params.Profile)
+	shortTermProfile := fmt.Sprintf("%s", params.Profile)
+	if len(params.ShortTermSuffix) > 0 {
+		shortTermProfile = fmt.Sprintf("%s-%s", params.Profile, params.ShortTermSuffix)
+	}
 
-	credInfo, _ := getCredentialInfo(awsCredsFile, longTermProfile, "long-term")
+	credInfo, _ := getCredentialInfo(awsCredsFile, longTermProfile)
 
 	stsSess, mfaDevice, err := getAwsStsSession(credInfo)
 	errCheck(err)
 
 	codeStr := readMFACode()
 
-	res, err := stsSess.GetSessionToken(&sts.GetSessionTokenInput{
-		TokenCode:       &codeStr,
-		SerialNumber:    &mfaDevice,
-		DurationSeconds: &params.Duration,
-	})
+	if len(params.AssumeRole) > 0 {
 
-	errCheck(err)
+		if len(params.RoleSessionName) == 0 {
+			logrus.Fatal("--role-session-name is required when you use --assume-role")
+		}
 
-	if verbose {
-		fmt.Println("")
-		fmt.Println(fmt.Sprintf("aws_access_key_id: %s", *res.Credentials.AccessKeyId))
-		fmt.Println(fmt.Sprintf("aws_secret_access_key: %s", *res.Credentials.SecretAccessKey))
-		fmt.Println(fmt.Sprintf("aws_session_token: %s", *res.Credentials.SessionToken))
-		fmt.Println(fmt.Sprintf("expiration: %s", *res.Credentials.Expiration))
+		arOutput, err := stsSess.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         &params.AssumeRole,
+			RoleSessionName: &params.RoleSessionName,
+			SerialNumber:    &mfaDevice,
+			TokenCode:       &codeStr,
+			DurationSeconds: &params.Duration,
+		})
+		errCheck(err)
+
+		if verbose {
+			fmt.Println("")
+			fmt.Println(fmt.Sprintf("aws_access_key_id: %s", *arOutput.Credentials.AccessKeyId))
+			fmt.Println(fmt.Sprintf("aws_secret_access_key: %s", *arOutput.Credentials.SecretAccessKey))
+			fmt.Println(fmt.Sprintf("aws_session_token: %s", *arOutput.Credentials.SessionToken))
+			fmt.Println(fmt.Sprintf("expiration: %s", *arOutput.Credentials.Expiration))
+		}
+		newCred := &credentialInfo{
+			AssumedRole:        "True",
+			AssumedRoleARN:     params.AssumeRole,
+			AwsAccessKeyID:     *arOutput.Credentials.AccessKeyId,
+			AwsSecretAccessKey: *arOutput.Credentials.SecretAccessKey,
+			AwsSecurityToken:   *arOutput.Credentials.SessionToken,
+			AwsSessionToken:    *arOutput.Credentials.SessionToken,
+			Region:             credInfo.Region,
+			Expiration:         *arOutput.Credentials.Expiration,
+		}
+
+		newSection, err := awsCredsFile.NewSection(shortTermProfile)
+		errCheck(err)
+
+		newSection.ReflectFrom(newCred)
+	} else {
+		stOutput, err := stsSess.GetSessionToken(&sts.GetSessionTokenInput{
+			TokenCode:       &codeStr,
+			SerialNumber:    &mfaDevice,
+			DurationSeconds: &params.Duration,
+		})
+		errCheck(err)
+
+		if verbose {
+			fmt.Println("")
+			fmt.Println(fmt.Sprintf("aws_access_key_id: %s", *stOutput.Credentials.AccessKeyId))
+			fmt.Println(fmt.Sprintf("aws_secret_access_key: %s", *stOutput.Credentials.SecretAccessKey))
+			fmt.Println(fmt.Sprintf("aws_session_token: %s", *stOutput.Credentials.SessionToken))
+			fmt.Println(fmt.Sprintf("expiration: %s", *stOutput.Credentials.Expiration))
+		}
+		newCred := &credentialInfo{
+			AssumedRole:        "False",
+			AwsAccessKeyID:     *stOutput.Credentials.AccessKeyId,
+			AwsSecretAccessKey: *stOutput.Credentials.SecretAccessKey,
+			AwsSecurityToken:   *stOutput.Credentials.SessionToken,
+			AwsSessionToken:    *stOutput.Credentials.SessionToken,
+			Region:             credInfo.Region,
+			Expiration:         *stOutput.Credentials.Expiration,
+		}
+
+		newSection, err := awsCredsFile.NewSection(shortTermProfile)
+		errCheck(err)
+
+		newSection.ReflectFrom(newCred)
+
 	}
-
-	newCred := &credentialInfo{
-		AssumedRole:        "False",
-		AwsAccessKeyID:     *res.Credentials.AccessKeyId,
-		AwsSecretAccessKey: *res.Credentials.SecretAccessKey,
-		AwsSecurityToken:   *res.Credentials.SessionToken,
-		AwsSessionToken:    *res.Credentials.SessionToken,
-		Region:             credInfo.Region,
-		Expiration:         *res.Credentials.Expiration,
-	}
-
-	shortTermProfile := fmt.Sprintf("%s", params.Profile)
-	if len(params.ShortTermSuffix) > 0 {
-		shortTermProfile = fmt.Sprintf("%s-%s", params.Profile, params.ShortTermSuffix)
-	}
-	newSection, err := awsCredsFile.NewSection(shortTermProfile)
-	errCheck(err)
-
-	newSection.ReflectFrom(newCred)
 
 	_ = saveAwsCredentialsFile(awsCredsFile, "")
 
