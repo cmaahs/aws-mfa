@@ -1,19 +1,3 @@
-/*
-Copyright © 2020 Splice Machine
-Author: Christopher Maahs <cmaahs@splicemachine.com>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package cmd
 
 import (
@@ -49,7 +33,7 @@ var verbose bool
 
 type processParameters struct {
 	Profile         string
-	Duration        int32
+	Duration        int64
 	AssumeRole      string
 	ShortTermSuffix string
 	RoleSessionName string
@@ -69,15 +53,12 @@ type credentialInfo struct {
 }
 
 // rootCmd represents the base command when called without any subcommands
-// splicectl doesn't have any functionality, other than to validate our auth
-// token.  A VALID auth token is required to run ANY command other than the
-// 'auth' command.
 var rootCmd = &cobra.Command{
 	Use:   "aws-mfa",
 	Short: `manage short term AWS profiles with MFA`,
 	Run: func(cmd *cobra.Command, args []string) {
 		profile, _ := cmd.Flags().GetString("profile")
-		duration, _ := cmd.Flags().GetInt32("duration")
+		duration, _ := cmd.Flags().GetInt64("duration")
 		assumeRole, _ := cmd.Flags().GetString("assume-role")
 		shortTermSuffix, _ := cmd.Flags().GetString("short-term-suffix")
 		roleSessionName, _ := cmd.Flags().GetString("role-session-name")
@@ -223,8 +204,9 @@ func process(params *processParameters) (string, error) {
 	codeStr := readMFACode()
 
 	res, err := stsSess.GetSessionToken(&sts.GetSessionTokenInput{
-		TokenCode:    &codeStr,
-		SerialNumber: &mfaDevice,
+		TokenCode:       &codeStr,
+		SerialNumber:    &mfaDevice,
+		DurationSeconds: &params.Duration,
 	})
 
 	errCheck(err)
@@ -273,9 +255,8 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.splicectl/config.yml)")
-	// --profile splice --duration 43200 --force --assume-role arn:aws:iam::869559096376:role/x_primary_admin --short-term-suffix pd --role-session-name pd
 	rootCmd.Flags().String("profile", "", "specify the target profile to write the token to")
-	rootCmd.Flags().Int32("duration", 3600, "specify the duration for the temporary access token")
+	rootCmd.Flags().Int64("duration", 3600, "specify the duration for the temporary access token")
 	rootCmd.Flags().String("assume-role", "", "specify a role to assume")
 	rootCmd.Flags().String("short-term-suffix", "", "specify the short term profile suffix")
 	rootCmd.Flags().String("role-session-name", "", "specify the role session name")
